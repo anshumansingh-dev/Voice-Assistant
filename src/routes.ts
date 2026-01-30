@@ -1,11 +1,11 @@
-import express from "express";
+import express, { Router } from "express";
 import multer from "multer";
 //import { generateAnswer } from "./llm.js";
 import { textToSpeech } from "./tts.js";
 import { speechToText } from "./stt.js";
 
 const upload = multer();
-export const router = express.Router();
+export const router: Router = express.Router();
 
 router.post("/stt", upload.single("audio"), async (req, res) => {
   try {
