@@ -8,6 +8,10 @@ const now = () => new Date().toISOString();
 export function setupWebSocket(server: any) {
   const wss = new WebSocketServer({ server });
 
+  wss.on("error", (err) => {
+    console.error("❌ WebSocket Server Error:", err);
+  });
+
   wss.on("connection", (ws) => {
     console.log(`[${now()}] 🔌 Client connected`);
 
@@ -36,6 +40,10 @@ export function setupWebSocket(server: any) {
       processing = true;
 
       try {
+        ws.on("error", (err) => {
+          console.error("❌ WS Connection Error:", err);
+        });
+
         console.log(`[${now()}] 🧠 STT started`);
         const sttStart = Date.now();
 
