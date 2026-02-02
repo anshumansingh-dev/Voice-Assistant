@@ -6,6 +6,7 @@ const toggleBtn = document.getElementById("toggleBtn");
 
 let mediaRecorder;
 let audioChunks = [];
+
 let isActive = false;
 let isSpeaking = false;
 let isWaitingForResponse = false;
@@ -16,35 +17,32 @@ let audioSource;
 /* ---------------- WebSocket ---------------- */
 
 socket.onopen = () => {
+  console.log("🔌 WebSocket connected");
   status.textContent = "Connected. Ready.";
-  console.log("WebSocket connected");
 };
 
 socket.onclose = () => {
-  status.textContent = "Disconnected. Refresh the page.";
-  console.log("WebSocket disconnected");
+  console.log("❌ WebSocket disconnected");
+  status.textContent = "Disconnected.";
   stopConversation();
 };
 
 socket.onmessage = async (event) => {
-  console.log("Received response from server");
-  
-  // Don't process if already speaking or waiting for response
-  if (isSpeaking || isWaitingForResponse) {
-    console.log("Skipping - already processing or waiting");
-    return;
-  }
+  console.log("📥 Client received TTS audio");
 
-  isWaitingForResponse = true;
+  if (!isActive || isSpeaking) return;
+
   isSpeaking = true;
-  
-  // 🔇 Stop recording immediately
+  isWaitingForResponse = true;
+
+  // 🔇 HARD STOP mic
   if (mediaRecorder && mediaRecorder.state === "recording") {
     mediaRecorder.stop();
   }
 
   const audioBlob = event.data;
-  console.log("Audio blob size:", audioBlob.size, "bytes");
+  console.log("🔊 Audio size:", audioBlob.size);
+
   const audioUrl = URL.createObjectURL(audioBlob);
   const audio = new Audio(audioUrl);
 
@@ -52,25 +50,25 @@ socket.onmessage = async (event) => {
   status.textContent = "Speaking...";
 
   await audio.play();
-  console.log("Playing audio response");
 
   audio.onended = () => {
-  isSpeaking = false;
-  isWaitingForResponse = false;
+    console.log("✅ TTS playback finished");
 
-  // 🧠 IMPORTANT: cooldown to avoid feedback loop
-  setTimeout(() => {
-    if (!isActive) return;
+    isSpeaking = false;
+    isWaitingForResponse = false;
 
-    orb.className = "listening";
-    status.textContent = "Listening...";
-    loopRecording(); // 🎙️ resume ONLY after cooldown
-  }, 800); // 👈 600–1000ms works best
+    // 🧠 Cooldown to avoid echo
+    setTimeout(() => {
+      if (!isActive) return;
+
+      orb.className = "listening";
+      status.textContent = "Listening...";
+      loopRecording(); // 🎙️ resume ONLY here
+    }, 800);
+  };
 };
-};
 
-
-/* ---------------- Toggle Button ---------------- */
+/* ---------------- Toggle ---------------- */
 
 toggleBtn.onclick = async () => {
   isActive = !isActive;
@@ -86,12 +84,11 @@ toggleBtn.onclick = async () => {
   }
 };
 
-/* ---------------- Conversation Control ---------------- */
+/* ---------------- Conversation ---------------- */
 
 async function startConversation() {
   try {
-    status.textContent = "Starting microphone…";
-    console.log("Starting conversation, requesting microphone access");
+    console.log("🎙️ Requesting microphone");
 
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -99,15 +96,13 @@ async function startConversation() {
         noiseSuppression: true,
         autoGainControl: true,
         sampleRate: 48000,
-        channelCount: 1
-      }
+        channelCount: 1,
+      },
     });
-    console.log("Microphone access granted");
 
     audioContext = new AudioContext();
     audioSource = audioContext.createMediaStreamSource(stream);
 
-    // Filters
     const highpass = audioContext.createBiquadFilter();
     highpass.type = "highpass";
     highpass.frequency.value = 200;
@@ -122,45 +117,46 @@ async function startConversation() {
     const destination = audioContext.createMediaStreamDestination();
     lowpass.connect(destination);
 
-    const cleanStream = new MediaStream([
-      destination.stream.getAudioTracks()[0],
-    ]);
-
-    mediaRecorder = new MediaRecorder(cleanStream, {
+    mediaRecorder = new MediaRecorder(destination.stream, {
       mimeType: "audio/webm;codecs=opus",
     });
 
-    mediaRecorder.ondataavailable = e => {
+    mediaRecorder.ondataavailable = (e) => {
       if (e.data.size > 0) {
         audioChunks.push(e.data);
-        console.log("Audio chunk received:", e.data.size, "bytes");
+        console.log("🎧 Chunk size:", e.data.size);
       }
     };
 
     mediaRecorder.onstop = () => {
-      console.log("MediaRecorder stopped, isActive:", isActive, "chunks:", audioChunks.length);
+      console.log("🛑 Recording stopped | chunks:", audioChunks.length);
+
       if (!audioChunks.length || !isActive) return;
 
-      const audioBlob = new Blob(audioChunks, { type: "audio/webm" });
-      console.log("Sending audio to server, size:", audioBlob.size, "bytes");
-      socket.send(audioBlob);
+      const blob = new Blob(audioChunks, { type: "audio/webm" });
+      console.log("🚀 Sending audio | size:", blob.size);
+
+      socket.send(blob);
       audioChunks = [];
+
+      // ❌ DO NOT restart recording here
+      console.log("⏸️ Waiting for LLM/TTS");
     };
 
     orb.className = "listening";
-    status.textContent = "Listening…";
-
+    status.textContent = "Listening...";
     loopRecording();
-
   } catch (err) {
     console.error(err);
-    status.textContent = "Microphone access failed.";
+    status.textContent = "Mic access failed.";
     stopConversation();
   }
 }
 
 function stopConversation() {
   isActive = false;
+  isSpeaking = false;
+  isWaitingForResponse = false;
 
   if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
@@ -178,18 +174,15 @@ function stopConversation() {
 /* ---------------- Recording Loop ---------------- */
 
 function loopRecording() {
-  if (!isActive) return;
+  if (!isActive || isSpeaking || isWaitingForResponse) return;
 
-  console.log("Starting new recording");
+  console.log("🎙️ Recording started");
   mediaRecorder.start();
 
   setTimeout(() => {
-    if (!isActive) return;
-    console.log("Stopping recording");
-    mediaRecorder.stop();
+    if (!isActive || isSpeaking) return;
 
-    setTimeout(() => {
-      if (isActive) loopRecording();
-    }, 250); // gap
-  }, 7000); // utterance window
+    console.log("🛑 Recording timeout");
+    mediaRecorder.stop();
+  }, 3500); // ⬅️ reduced window
 }

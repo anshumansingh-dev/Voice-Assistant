@@ -3,104 +3,87 @@ import { speechToText } from "./stt.js";
 import { generateAnswer } from "./llm.js";
 import { textToSpeech } from "./tts.js";
 
+const now = () => new Date().toISOString();
+
 export function setupWebSocket(server: any) {
   const wss = new WebSocketServer({ server });
 
   wss.on("connection", (ws) => {
-    console.log("Client connected");
+    console.log(`[${now()}] 🔌 Client connected`);
 
-    let textBuffer = "";
-    let silenceTimer: NodeJS.Timeout | null = null;
     let processing = false;
-
-    // 🔕 prevents echo / silence after TTS
     let lastTTSAt = 0;
 
     ws.on("message", async (data: Buffer) => {
-      /* ---------------- GUARDS ---------------- */
+      console.log(`[${now()}] 📥 Server received audio | size=${data.byteLength}`);
 
-      // Ignore mic noise right after TTS
+      // 🔕 Ignore echo
       if (Date.now() - lastTTSAt < 2000) {
-        console.log("Ignoring audio — post-TTS cooldown");
-        return;
-      }
-
-      // Ignore silence blobs
-      if (data.byteLength < 8000) {
-        console.log("Ignoring tiny audio chunk");
+        console.log(`[${now()}] 🔕 Ignoring post-TTS echo`);
         return;
       }
 
       if (processing) {
-        console.log("Skipping — already processing");
+        console.log(`[${now()}] ⏭️ Skipping — already processing`);
         return;
       }
 
-      /* ---------------- STT ---------------- */
-
-      const chunkText = await speechToText(data).catch(() => "");
-
-      if (!chunkText || chunkText.trim().length === 0) {
-        console.warn("STT: no speech detected");
+      if (data.byteLength < 8000) {
+        console.log(`[${now()}] 🫥 Ignoring tiny blob`);
         return;
       }
 
-      console.log("STT:", chunkText);
+      processing = true;
 
-      // Append rolling transcript
-      textBuffer += " " + chunkText;
+      try {
+        console.log(`[${now()}] 🧠 STT started`);
+        const sttStart = Date.now();
 
-      // Reset silence timer
-      if (silenceTimer) clearTimeout(silenceTimer);
+        const text = await speechToText(data).catch(() => "");
 
-      silenceTimer = setTimeout(async () => {
-        const finalText = textBuffer.trim();
-        textBuffer = "";
+        console.log(
+          `[${now()}] 🧠 STT finished | ${Date.now() - sttStart}ms | text="${text}"`
+        );
 
-        // Require meaningful sentence
-        if (finalText.split(" ").length < 3) {
-          console.log("Ignoring short fragment:", finalText);
+        if (!text || text.trim().length < 3) {
+          console.log(`[${now()}] 🔇 STT empty result`);
           return;
         }
 
-        processing = true;
+        console.log(`[${now()}] 🤖 LLM started`);
+        const llmStart = Date.now();
 
-        try {
-          console.log("FINAL USER INPUT:", finalText);
+        const answer = await generateAnswer(text).catch(() => "");
 
-          /* ---------------- LLM ---------------- */
+        console.log(
+          `[${now()}] 🤖 LLM finished | ${Date.now() - llmStart}ms | length=${answer.length}`
+        );
 
-          const answer = await generateAnswer(finalText).catch(() => "");
+        if (!answer) return;
 
-          if (!answer || answer.trim().length === 0) {
-            console.warn("LLM returned empty response");
-            return;
-          }
+        console.log(`[${now()}] 🔊 TTS started`);
+        const ttsStart = Date.now();
 
-          console.log("LLM:", answer);
+        const audio = await textToSpeech(answer).catch(() => null);
 
-          /* ---------------- TTS ---------------- */
+        console.log(
+          `[${now()}] 🔊 TTS finished | ${Date.now() - ttsStart}ms | audioSize=${audio?.length}`
+        );
 
-          const audio = await textToSpeech(answer).catch(() => null);
+        if (!audio) return;
 
-          if (!audio) {
-            console.warn("TTS failed — no audio");
-            return;
-          }
-
-          ws.send(audio);
-          lastTTSAt = Date.now(); // 🔕 activate cooldown
-        } catch (err) {
-          console.error("WS processing error:", err);
-        } finally {
-          processing = false;
-        }
-      }, 2800); // 🧠 silence window (key)
+        ws.send(audio);
+        lastTTSAt = Date.now();
+        console.log(`[${now()}] 🚀 Sending audio to client`);
+      } catch (err) {
+        console.error(`[${now()}] ❌ WS error`, err);
+      } finally {
+        processing = false;
+      }
     });
 
     ws.on("close", () => {
-      console.log("Client disconnected");
-      if (silenceTimer) clearTimeout(silenceTimer);
+      console.log(`[${now()}] ❌ Client disconnected`);
     });
   });
 }
