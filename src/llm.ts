@@ -7,7 +7,7 @@ export async function generateAnswer(prompt: string): Promise<string> {
     input: {
       text: prompt,
     },
-    //disableTools: true,
+    disableTools: true,
 
     systemPrompt: `
 You are a helpful voice assistant.

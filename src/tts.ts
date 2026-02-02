@@ -13,7 +13,7 @@ export async function textToSpeech(text: string): Promise<Buffer> {
   tts: {
     enabled: true,
     useAiResponse: false,
-    voice: "hi-IN-Wavenet-A",
+    voice: "en-US-Wavenet-D",  // ⚡ English voice (faster for English text)
     format: "mp3"
   }
 });
