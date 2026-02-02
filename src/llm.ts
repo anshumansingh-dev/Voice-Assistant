@@ -1,25 +1,23 @@
 import { neurolink } from "./neurolink.js";
 
-export async function generateAnswer(prompt: string): Promise<string> {
-  const result = await neurolink.generate({
-    provider: "vertex",
-    model: "gemini-2.5-flash",
-    input: {
-      text: prompt,
-    },
+export async function streamAnswer(prompt: string) {
+  console.log("🤖 LLM stream started");
+
+  const result = await neurolink.stream({
+    provider: "vertex",                 
+    model: "gemini-2.5-flash",           // fastest on Vertex
+    input: { text: prompt },
+
+    temperature: 0.3,
+    maxTokens: 120,
     disableTools: true,
 
     systemPrompt: `
 You are a helpful voice assistant.
-Answer conversationally.
-If unclear, ask a clarifying question.
-Do not give points , give answers in one paragraph keep answer simple and short.
-`,
+Answer conversationally in 2–3 sentences.
+Be clear and concise.
+`
+  });
 
-//     temperature: 0.4,
-//     maxTokens: 80,
- });
-
-  return result.content.trim();
+  return result.stream; // 🔥 async iterator
 }
-

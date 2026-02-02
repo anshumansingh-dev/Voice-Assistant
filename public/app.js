@@ -13,6 +13,7 @@ let isWaitingForResponse = false;
 
 let audioContext;
 let audioSource;
+let currentAudio = null;
 
 /* ---------------- WebSocket ---------------- */
 
@@ -23,20 +24,16 @@ socket.onopen = () => {
 
 socket.onclose = () => {
   console.log("❌ WebSocket disconnected");
-  status.textContent = "Disconnected.";
   stopConversation();
 };
 
 socket.onmessage = async (event) => {
-  console.log("📥 Client received TTS audio");
-
   if (!isActive || isSpeaking) return;
 
   isSpeaking = true;
   isWaitingForResponse = true;
 
-  // 🔇 HARD STOP mic
-  if (mediaRecorder && mediaRecorder.state === "recording") {
+  if (mediaRecorder?.state === "recording") {
     mediaRecorder.stop();
   }
 
@@ -45,6 +42,7 @@ socket.onmessage = async (event) => {
 
   const audioUrl = URL.createObjectURL(audioBlob);
   const audio = new Audio(audioUrl);
+  currentAudio = audio;
 
   orb.className = "speaking";
   status.textContent = "Speaking...";
@@ -54,17 +52,16 @@ socket.onmessage = async (event) => {
   audio.onended = () => {
     console.log("✅ TTS playback finished");
 
+    currentAudio = null;
     isSpeaking = false;
     isWaitingForResponse = false;
 
-    // 🧠 Cooldown to avoid echo
     setTimeout(() => {
       if (!isActive) return;
-
       orb.className = "listening";
       status.textContent = "Listening...";
-      loopRecording(); // 🎙️ resume ONLY here
-    }, 800);
+      loopRecording();
+    }, 500);
   };
 };
 
@@ -88,14 +85,11 @@ toggleBtn.onclick = async () => {
 
 async function startConversation() {
   try {
-    console.log("🎙️ Requesting microphone");
-
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        sampleRate: 48000,
         channelCount: 1,
       },
     });
@@ -122,25 +116,15 @@ async function startConversation() {
     });
 
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) {
-        audioChunks.push(e.data);
-        console.log("🎧 Chunk size:", e.data.size);
-      }
+      if (e.data.size > 0) audioChunks.push(e.data);
     };
 
     mediaRecorder.onstop = () => {
-      console.log("🛑 Recording stopped | chunks:", audioChunks.length);
-
       if (!audioChunks.length || !isActive) return;
 
       const blob = new Blob(audioChunks, { type: "audio/webm" });
-      console.log("🚀 Sending audio | size:", blob.size);
-
       socket.send(blob);
       audioChunks = [];
-
-      // ❌ DO NOT restart recording here
-      console.log("⏸️ Waiting for LLM/TTS");
     };
 
     orb.className = "listening";
@@ -148,7 +132,6 @@ async function startConversation() {
     loopRecording();
   } catch (err) {
     console.error(err);
-    status.textContent = "Mic access failed.";
     stopConversation();
   }
 }
@@ -158,14 +141,15 @@ function stopConversation() {
   isSpeaking = false;
   isWaitingForResponse = false;
 
-  if (mediaRecorder && mediaRecorder.state !== "inactive") {
+  currentAudio?.pause();
+  currentAudio = null;
+
+  if (mediaRecorder?.state !== "inactive") {
     mediaRecorder.stop();
   }
 
-  if (audioContext) {
-    audioContext.close();
-    audioContext = null;
-  }
+  audioContext?.close();
+  audioContext = null;
 
   orb.className = "idle";
   status.textContent = "Conversation stopped.";
@@ -174,15 +158,28 @@ function stopConversation() {
 /* ---------------- Recording Loop ---------------- */
 
 function loopRecording() {
-  if (!isActive || isSpeaking || isWaitingForResponse) return;
+  if (!isActive) return;
 
-  console.log("🎙️ Recording started");
-  mediaRecorder.start();
+  // 🔥 User interrupts AI
+  if (isSpeaking && currentAudio) {
+    console.log("🛑 User interrupted AI");
 
-  setTimeout(() => {
-    if (!isActive || isSpeaking) return;
+    currentAudio.pause();
+    currentAudio = null;
 
-    console.log("🛑 Recording timeout");
-    mediaRecorder.stop();
-  }, 3500); // ⬅️ reduced window
+    socket.send(JSON.stringify({ type: "INTERRUPT" }));
+
+    isSpeaking = false;
+    isWaitingForResponse = false;
+  }
+
+  if (mediaRecorder.state === "inactive") {
+    mediaRecorder.start();
+
+    setTimeout(() => {
+      if (mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+      }
+    }, 3500);
+  }
 }
