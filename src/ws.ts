@@ -19,6 +19,7 @@ export function setupWebSocket(server: any) {
     let lastTTSAt = 0;
 
     ws.on("message", async (data: Buffer) => {
+      const requestStart = Date.now();
       console.log(`[${now()}] 📥 Server received audio | size=${data.byteLength}`);
 
       // 🔕 Ignore echo
@@ -50,7 +51,7 @@ export function setupWebSocket(server: any) {
         const text = await speechToText(data).catch(() => "");
 
         console.log(
-          `[${now()}] 🧠 STT finished | ${Date.now() - sttStart}ms | text="${text}"`
+          `[${now()}] 🧠 STT finished | ${((Date.now() - sttStart) / 1000).toFixed(2)}s | text="${text}"`
         );
 
         if (!text || text.trim().length < 3) {
@@ -64,7 +65,7 @@ export function setupWebSocket(server: any) {
         const answer = await generateAnswer(text).catch(() => "");
 
         console.log(
-          `[${now()}] 🤖 LLM finished | ${Date.now() - llmStart}ms | length=${answer.length}`
+          `[${now()}] 🤖 LLM finished | ${((Date.now() - llmStart) / 1000).toFixed(2)}s | length=${answer.length}`
         );
 
         if (!answer) return;
@@ -75,7 +76,7 @@ export function setupWebSocket(server: any) {
         const audio = await textToSpeech(answer).catch(() => null);
 
         console.log(
-          `[${now()}] 🔊 TTS finished | ${Date.now() - ttsStart}ms | audioSize=${audio?.length}`
+          `[${now()}] 🔊 TTS finished | ${((Date.now() - ttsStart) / 1000).toFixed(2)}s | audioSize=${audio?.length}`
         );
 
         if (!audio) return;
@@ -83,6 +84,9 @@ export function setupWebSocket(server: any) {
         ws.send(audio);
         lastTTSAt = Date.now();
         console.log(`[${now()}] 🚀 Sending audio to client`);
+
+        const totalTime = ((Date.now() - requestStart) / 1000).toFixed(2);
+        console.log(`[${now()}] ✅ TOTAL TIME | ${totalTime}s`);
       } catch (err) {
         console.error(`[${now()}] ❌ WS error`, err);
       } finally {

@@ -2,8 +2,8 @@ import { neurolink } from "./neurolink.js";
 
 export async function generateAnswer(prompt: string): Promise<string> {
   const result = await neurolink.generate({
-    provider: "google-ai",
-    model: "gemini-2.5-flash",
+    provider: "azure",
+    model: "gpt-4o-automatic",
 
     input: {
       text: prompt,
@@ -11,7 +11,7 @@ export async function generateAnswer(prompt: string): Promise<string> {
 
     // ⚡ CRITICAL FOR LATENCY
     temperature: 0.25,      // lower = faster + stable
-    //maxTokens: 140,         // ⬅️ FIXES HALF ANSWERS
+    maxTokens: 140,         // ⬅️ FIXES HALF ANSWERS
     disableTools: true,     // ⬅️ removes orchestration
     enableAnalytics: false,
     enableEvaluation: false,
