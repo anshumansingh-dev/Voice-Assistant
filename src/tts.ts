@@ -1,28 +1,34 @@
-import { neurolink } from "./neurolink.js";
+import { CartesiaClient } from "@cartesia/cartesia-js";
 
-
-export async function textToSpeech(text: string): Promise<Buffer> {
-  const result = await neurolink.generate({
-  provider: "vertex",
-  model: "gemini-2.5-flash",
-
-  input: {
-    text: text
-  },
-
-  tts: {
-    enabled: true,
-    useAiResponse: false,
-    voice: "en-US-Wavenet-D",  // ⚡ English voice (faster for English text)
-    format: "mp3"
-  }
+const client = new CartesiaClient({
+  apiKey: process.env.CARTESIA_API_KEY!,
 });
 
-  if (!result.audio) {
-    throw new Error("TTS failed: No audio returned");
-  }
+/**
+ * Synchronous TTS using Cartesia Sonic (Bytes API)
+ */
+export async function textToSpeech(text: string): Promise<Buffer> {
+  console.log("🔊 [CARTESIA] Sonic TTS request");
 
+  const response = await client.tts.bytes({
+    modelId: "sonic-3",
+    voice: {
+      mode: "id",
+      id: "694f9389-aac1-45b6-b726-9d9369183238", // default Sonic voice
+    },
+    outputFormat: {
+      container: "wav",
+      encoding: "pcm_s16le",
+      sampleRate: 44100,
+    },
+    transcript: text,
+  });
 
-  return result.audio.buffer;
+  // SDK returns a Response-like object → convert to bytes
+  const audioBytes = await new Response(response).arrayBuffer();
+  const audioBuffer = Buffer.from(audioBytes);
+
+  console.log(`✅ [CARTESIA] Audio generated (${audioBuffer.length} bytes)`);
+
+  return audioBuffer;
 }
-

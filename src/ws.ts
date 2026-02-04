@@ -1,145 +1,220 @@
 import WebSocket, { WebSocketServer } from "ws";
-import { speechToText } from "./stt.js";
 import { streamAnswer } from "./llm.js";
 import { textToSpeech } from "./tts.js";
 
-/* --------------------
-   High-resolution timer
--------------------- */
-const now = () => Number(process.hrtime.bigint() / 1_000_000n); // ms
+const SONIOX_WS_URL = "wss://stt-rt.soniox.com/transcribe-websocket";
+const SONIOX_API_KEY = process.env.SONIOX_API_KEY!;
+
+// High-resolution timer (seconds)
+const now = () => Number(process.hrtime.bigint()) / 1e9;
 
 export function setupWebSocket(server: any) {
   const wss = new WebSocketServer({ server });
 
-  wss.on("connection", (ws) => {
-    console.log(`[${new Date().toISOString()}] 🔌 Client connected`);
+  wss.on("connection", (clientWs) => {
+    console.log("🔌 [CLIENT] Connected");
 
-    let processing = false;
-    let lastTTSAt = 0;
     let cancelled = false;
+    let processing = false;
 
-    ws.on("message", async (data) => {
-      /* ---------- INTERRUPT ---------- */
-      if (typeof data === "string") {
-        try {
-          const msg = JSON.parse(data);
-          if (msg.type === "INTERRUPT") {
-            console.log("🛑 INTERRUPT received");
-            cancelled = true;
-            processing = false;
-            return;
-          }
-        } catch {}
+    let sonioxWs: WebSocket | null = null;
+    let pendingAudio: Buffer | null = null;
+
+    // ⏱ Timing
+    let tTurnStart = 0;
+    let tSTTStart = 0;
+    let tLLMStart = 0;
+    let tLLMFirstToken = 0;
+
+    /* ================= SONIOX ================= */
+
+    function createSonioxWS() {
+      console.log("🎙 [SONIOX] Connecting...");
+      sonioxWs = new WebSocket(SONIOX_WS_URL);
+
+      sonioxWs.on("open", () => {
+        console.log("✅ [SONIOX] Connected");
+
+        sonioxWs!.send(
+          JSON.stringify({
+            api_key: SONIOX_API_KEY,
+            model: "stt-rt-preview",
+            audio_format: "auto",
+            language_hints: ["en"],
+            enable_endpoint_detection: true,
+          })
+        );
+
+        // Send buffered audio immediately (prevents 408 timeout)
+        if (pendingAudio) {
+          tTurnStart = now();
+          tSTTStart = now();
+
+          console.log("➡️ [SONIOX] Sending buffered audio (STT started)");
+          sonioxWs!.send(pendingAudio);
+          sonioxWs!.send("");
+          pendingAudio = null;
+        }
+      });
+
+      sonioxWs.on("message", handleSonioxMessage);
+
+      sonioxWs.on("close", (code) => {
+        console.log(`❌ [SONIOX] WS closed (code=${code})`);
+      });
+
+      sonioxWs.on("error", (err) => {
+        console.error("❌ [SONIOX] WS error:", err);
+      });
+    }
+
+    async function handleSonioxMessage(msg: WebSocket.RawData) {
+      let data: any;
+      try {
+        data = JSON.parse(msg.toString());
+      } catch {
+        return;
       }
 
-      /* ---------- GUARDS ---------- */
-      if (processing) return;
-      if (Date.now() - lastTTSAt < 1200) return;
-      if (!(data instanceof Buffer) || data.byteLength < 8000) return;
+      if (data.error_code) {
+        console.error("❌ [SONIOX] ERROR:", data.error_message);
+        return;
+      }
+
+      if (data.finished) {
+        console.log(
+          `🏁 [SONIOX] Finished | STT latency = ${(now() - tSTTStart).toFixed(
+            2
+          )}s`
+        );
+        return;
+      }
+
+      if (!Array.isArray(data.tokens)) return;
+      if (processing || cancelled) return;
+
+      const finalTokens = data.tokens.filter(
+        (t: any) => t.is_final && t.text
+      );
+
+      if (!finalTokens.length) return;
+
+      const text = finalTokens.map((t: any) => t.text).join(" ").trim();
+      if (!text) return;
+
+      console.log(
+        `🧠 [SONIOX] FINAL (${(now() - tSTTStart).toFixed(2)}s):`,
+        text
+      );
 
       processing = true;
       cancelled = false;
 
-      const tRequest = now();
-      console.log(
-        `[${new Date().toISOString()}] 📥 Server received audio | size=${data.byteLength}`
-      );
-
       try {
-        /* ================= STT ================= */
+        /* ================= LLM ================= */
 
-        const tSTTStart = now();
-        console.log("🧠 STT started");
-
-        let text = "";
-
-        try {
-          text = await speechToText(data);
-        } catch (err: any) {
-          if (err?.code === "STT_TRANSCRIPTION_FAILED") {
-            console.log("🔇 STT: no speech detected (expected)");
-            return; // <-- silently ignore
-          }
-
-          // real errors only
-          throw err;
-        }
-
-        console.log(
-          `🧠 STT finished | ${now() - tSTTStart}ms | text="${text}"`
-        );
-
-        if (!text?.trim()) return;
-
-        if (!text || !text.trim()) {
-          console.log("🔇 Empty transcript — ignoring");
-          return;
-        }
-
-        /* ================= LLM STREAM ================= */
-
-        const tLLMStart = now();
-        console.log("🤖 LLM streaming started");
+        tLLMStart = now();
+        console.log("🤖 [LLM] Streaming started");
 
         const stream = await streamAnswer(text);
-
-        let buffer = "";
+        let fullResponse = "";
         let firstTokenSeen = false;
 
         for await (const chunk of stream) {
-          if (cancelled) {
-            console.log("🛑 LLM stream cancelled");
-            return;
-          }
+          if (cancelled) return;
 
           if ("content" in chunk && typeof chunk.content === "string") {
             if (!firstTokenSeen) {
+              tLLMFirstToken = now();
               console.log(
-                `⚡ LLM first token | ${now() - tLLMStart}ms`
+                `⚡ [LLM] First token latency = ${(
+                  tLLMFirstToken - tLLMStart
+                ).toFixed(2)}s`
               );
               firstTokenSeen = true;
             }
 
-            buffer += chunk.content;
-
-            if (/[.?!]\s*$/.test(buffer)) {
-              await speak(buffer.trim());
-              buffer = "";
-            }
+            fullResponse += chunk.content;
           }
         }
 
-        if (!cancelled && buffer.trim()) {
-          await speak(buffer.trim());
-        }
+        fullResponse = fullResponse.trim();
+        if (!fullResponse) return;
 
-        console.log(`✅ TURN COMPLETE | total=${now() - tRequest}ms`);
+        /* ================= TTS ================= */
+
+        const tTTSStart = now();
+        console.log("🔊 [TTS] Speaking full response");
+
+        const audio = await textToSpeech(fullResponse);
+
+        console.log(
+          `🔊 [TTS] Done | ${(now() - tTTSStart).toFixed(2)}s`
+        );
+
+        clientWs.send(audio);
+
+        console.log(
+          `✅ [PIPELINE] Turn complete | total = ${(now() - tTurnStart).toFixed(
+            2
+          )}s`
+        );
       } catch (err) {
-        console.error("❌ WS error:", err);
+        console.error("❌ [PIPELINE] Error:", err);
       } finally {
         processing = false;
       }
+    }
 
-      async function speak(text: string) {
-        if (cancelled) return;
+    /* ================= BROWSER AUDIO ================= */
 
-        console.log("🔊 Speaking:", text);
-        const tTTSStart = now();
+    clientWs.on("message", (data) => {
+      // Interrupt
+      if (typeof data === "string") {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.type === "INTERRUPT") {
+            console.log("🛑 [CLIENT] INTERRUPT");
+            cancelled = true;
+            processing = false;
+            return;
+          }
+        } catch {
+          return;
+        }
+      }
 
-        const audio = await textToSpeech(text);
+      // Ignore tiny junk blobs (silence / headers)
+      if (data instanceof Buffer && data.length < 12000) {
+        return;
+      }
 
-        console.log(
-          `🔊 TTS finished | ${now() - tTTSStart}ms | audioSize=${audio.length}`
-        );
+      // Audio blob
+      if (data instanceof Buffer) {
+        console.log(`🎧 [AUDIO] Blob received (${data.length} bytes)`);
 
-        ws.send(audio);
-        lastTTSAt = Date.now();
+        if (!sonioxWs || sonioxWs.readyState !== WebSocket.OPEN) {
+          pendingAudio = data;
+          createSonioxWS();
+          return;
+        }
+
+        tTurnStart = now();
+        tSTTStart = now();
+
+        sonioxWs.send(data);
+        sonioxWs.send("");
       }
     });
 
-    ws.on("close", () => {
-      console.log("❌ Client disconnected");
+    clientWs.on("close", () => {
+      console.log("❌ [CLIENT] Disconnected");
       cancelled = true;
+
+      if (sonioxWs && sonioxWs.readyState === WebSocket.OPEN) {
+        sonioxWs.send("");
+        sonioxWs.close();
+      }
     });
   });
 }

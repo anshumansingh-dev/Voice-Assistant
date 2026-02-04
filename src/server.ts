@@ -26,19 +26,16 @@ server.listen(PORT, async () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
 
   // 🔥 LLM WARM-UP (keep this)
-  try {
-    console.log("🔥 Warming up Vertex LLM...");
-    await neurolink.generate({
-      provider: "vertex",
-      model: "gemini-2.5-flash",
-      input: { text: "hi" },
-      maxTokens: 5,
-      disableTools: true,
-      enableAnalytics: false,
-      enableEvaluation: false,
-    });
-    console.log("✅ Vertex LLM warmed up");
-  } catch (err) {
-    console.error("❌ LLM warm-up failed:", err);
-  }
+//   try {
+//     console.log("🔥 Warming up Azure LLM...");
+//     await neurolink.generate({
+//   provider: "azure",
+//   model: "gpt-4o-automatic",
+//   input: { text: "hi" },
+//   maxTokens: 5
+// });
+//     console.log("✅ Azure LLM warmed up");
+//   } catch (err) {
+//     console.error("❌ LLM warm-up failed:", err);
+//   }
 });
