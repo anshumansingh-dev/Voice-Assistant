@@ -1,13 +1,31 @@
 import { neurolink } from "./neurolink.js";
 
-export async function generateAnswer(prompt: string): Promise<string> {
-  const result = await neurolink.generate({
+export type Message = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+
+export async function streamAnswer(
+  messages: Message[],
+  options?: { timeoutMs?: number }
+) {
+  const formattedConversation = messages
+    .map(m => `${m.role.toUpperCase()}: ${m.content}`)
+    .join("\n");
+
+  const result = await neurolink.stream({
     provider: "azure",
     model: "gpt-4o-automatic",
 
     input: {
-      text: prompt,
+      text: formattedConversation,
     },
+
+    // temperature: 0.3,
+    // maxTokens: 150,
+    // disableTools: true,
+
+    timeout: options?.timeoutMs ?? 30000,
 
     // ⚡ CRITICAL FOR LATENCY
     temperature: 0.25,      // lower = faster + stable
@@ -18,14 +36,12 @@ export async function generateAnswer(prompt: string): Promise<string> {
 
     // 🧠 Voice-specific instruction
     systemPrompt: `
-You are a helpful voice assistant.
-Answer in one short, complete paragraph.
-Finish your sentence.
-Keep the answer simple and conversational.
-If unclear, ask one clarifying question.
-Do not use bullet points.
-`,
+You are a real-time voice assistant.
+Respond naturally and concisely.
+Use short spoken sentences.
+Do not write paragraphs.
+`
   });
 
-  return result.content.trim();
+  return result.stream;
 }

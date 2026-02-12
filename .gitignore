@@ -20,3 +20,6 @@ yarn-error.log*
 
 # Build artifacts
 .svelte-kit/
+
+#dir
+python-vad/

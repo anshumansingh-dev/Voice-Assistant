@@ -1,26 +1,53 @@
-import { neurolink } from "./neurolink.js";
+import WebSocket from "ws";
 
-export async function speechToText(audioBuffer: Buffer): Promise<string> {
-  const result = await neurolink.generate({
-    provider: "vertex",
-    input: {
-      text: "Transcribe this audio",
-      audioFiles: [audioBuffer],
-    },
-    stt: {
-      languageCode: "en-IN",
-      enableAutomaticPunctuation: true,
-    },
-  });
+const SONIOX_WS = "wss://api.soniox.com/realtime";
+const API_KEY = process.env.SONIOX_API_KEY!;
 
-  // SAFEST extraction
-  if (result.transcription?.text) {
-    return result.transcription.text;
+type TranscriptHandler = (text: string) => void;
+
+export class SonioxSession {
+  private ws: WebSocket;
+  private onFinal?: TranscriptHandler;
+
+  constructor() {
+    this.ws = new WebSocket(SONIOX_WS, {
+      headers: {
+        Authorization: `Bearer ${API_KEY}`,
+      },
+    });
+
+    this.ws.on("open", () => {
+      this.ws.send(
+        JSON.stringify({
+          type: "start",
+          config: {
+            language: "en",
+            punctuation: true,
+          },
+        })
+      );
+    });
+
+    this.ws.on("message", (msg) => {
+      const data = JSON.parse(msg.toString());
+
+      if (data.type === "final_transcript" && data.text) {
+        this.onFinal?.(data.text);
+      }
+    });
   }
 
-  if (result.content) {
-    return result.content;
+  sendAudio(buffer: Buffer) {
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(buffer);
+    }
   }
 
-  throw new Error("STT failed: no transcription returned");
+  onFinalTranscript(cb: TranscriptHandler) {
+    this.onFinal = cb;
+  }
+
+  close() {
+    this.ws.close();
+  }
 }

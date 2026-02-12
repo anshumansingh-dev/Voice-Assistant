@@ -4,11 +4,19 @@
   <title>Voice Assistant</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
-  <div id="orb" class="idle"></div>
-  <button id="toggleBtn">Start Conversation</button>
-  <p id="status">Press "Start Conversation" to begin</p>
 
-  <script src="app.js"></script>
+<body>
+
+  <div id="orb" class="idle"></div>
+
+  <button id="toggleBtn">Start Conversation</button>
+  <p id="status">Ready</p>
+
+  <!-- VAD -->
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad/dist/index.browser.js"></script>
+
+  <script type="module" src="app.js"></script>
+
 </body>
 </html>
