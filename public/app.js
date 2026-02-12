@@ -4,182 +4,177 @@ const orb = document.getElementById("orb");
 const status = document.getElementById("status");
 const toggleBtn = document.getElementById("toggleBtn");
 
-let mediaRecorder;
-let audioChunks = [];
+/* ---------------- STATE ---------------- */
 
+let mediaRecorder = null;
 let isActive = false;
-let isSpeaking = false;
-let isWaitingForResponse = false;
 
-let audioContext;
-let audioSource;
-let currentAudio = null;
+/* ---------------- AUDIO PLAYBACK ENGINE ---------------- */
 
-/* ---------------- WebSocket ---------------- */
+// Cartesia sends 24kHz PCM
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+  sampleRate: 24000
+});
+
+let playbackTime = 0;
+
+function resetAudioPlayback() {
+  playbackTime = audioCtx.currentTime;
+}
+
+/* ---------------- SOCKET EVENTS ---------------- */
+
+socket.binaryType = "blob";
 
 socket.onopen = () => {
-  console.log("🔌 WebSocket connected");
-  status.textContent = "Connected. Ready.";
+  console.log("✅ WebSocket connected");
+  status.textContent = "Connected";
+};
+
+socket.onerror = (e) => {
+  console.error("❌ WebSocket error", e);
 };
 
 socket.onclose = () => {
-  console.log("❌ WebSocket disconnected");
+  console.log("❌ WS closed");
   stopConversation();
 };
 
+/* ----------- AUDIO FROM SERVER (TTS) ----------- */
+
 socket.onmessage = async (event) => {
-  if (!isActive || isSpeaking) return;
 
-  isSpeaking = true;
-  isWaitingForResponse = true;
+  // Handle control messages
+  if (typeof event.data === "string") {
+    try {
+      const msg = JSON.parse(event.data);
 
-  if (mediaRecorder?.state === "recording") {
-    mediaRecorder.stop();
+      if (msg.type === "NEW_TURN") {
+        console.log("🔄 NEW TURN → Reset playback");
+        resetAudioPlayback();
+        return;
+      }
+
+    } catch {}
+    return;
   }
 
-  const audioBlob = event.data;
-  console.log("🔊 Audio size:", audioBlob.size);
+  /* ---------- PCM AUDIO STREAM ---------- */
 
-  const audioUrl = URL.createObjectURL(audioBlob);
-  const audio = new Audio(audioUrl);
-  currentAudio = audio;
+  console.log("🎧 Received audio from server:", event.data.size);
 
-  orb.className = "speaking";
-  status.textContent = "Speaking...";
+  const arrayBuffer = await event.data.arrayBuffer();
 
-  await audio.play();
+  const pcm16 = new Int16Array(arrayBuffer);
+  const float32 = new Float32Array(pcm16.length);
 
-  audio.onended = () => {
-    console.log("✅ TTS playback finished");
+  for (let i = 0; i < pcm16.length; i++) {
+    float32[i] = pcm16[i] / 32768;
+  }
 
-    currentAudio = null;
-    isSpeaking = false;
-    isWaitingForResponse = false;
+  const audioBuffer = audioCtx.createBuffer(
+    1,
+    float32.length,
+    24000
+  );
 
-    setTimeout(() => {
-      if (!isActive) return;
-      orb.className = "listening";
-      status.textContent = "Listening...";
-      loopRecording();
-    }, 500);
-  };
+  audioBuffer.getChannelData(0).set(float32);
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+
+  if (playbackTime < now) playbackTime = now;
+
+  source.start(playbackTime);
+  playbackTime += audioBuffer.duration;
 };
 
-/* ---------------- Toggle ---------------- */
+/* ---------------- TOGGLE ---------------- */
 
 toggleBtn.onclick = async () => {
-  isActive = !isActive;
+  console.log("Button clicked");
 
-  if (isActive) {
-    toggleBtn.textContent = "Stop Conversation";
-    toggleBtn.classList.add("active");
+  if (!isActive) {
     await startConversation();
   } else {
-    toggleBtn.textContent = "Start Conversation";
-    toggleBtn.classList.remove("active");
     stopConversation();
   }
 };
 
-/* ---------------- Conversation ---------------- */
+/* ---------------- START ---------------- */
 
 async function startConversation() {
+  console.log("🎙 Starting conversation");
+
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        channelCount: 1,
-      },
+        channelCount: 1
+      }
     });
 
-    audioContext = new AudioContext();
-    audioSource = audioContext.createMediaStreamSource(stream);
+    console.log("✅ Mic granted");
 
-    const highpass = audioContext.createBiquadFilter();
-    highpass.type = "highpass";
-    highpass.frequency.value = 200;
+    if (!MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) {
+      alert("Browser does not support opus recording");
+      return;
+    }
 
-    const lowpass = audioContext.createBiquadFilter();
-    lowpass.type = "lowpass";
-    lowpass.frequency.value = 8000;
-
-    audioSource.connect(highpass);
-    highpass.connect(lowpass);
-
-    const destination = audioContext.createMediaStreamDestination();
-    lowpass.connect(destination);
-
-    mediaRecorder = new MediaRecorder(destination.stream, {
-      mimeType: "audio/webm;codecs=opus",
+    mediaRecorder = new MediaRecorder(stream, {
+      mimeType: "audio/webm;codecs=opus"
     });
+
+    /* -------- STREAM AUDIO CONTINUOUSLY -------- */
 
     mediaRecorder.ondataavailable = (e) => {
-      if (e.data.size > 0) audioChunks.push(e.data);
+      if (!isActive) return;
+
+      if (e.data.size > 0 && socket.readyState === WebSocket.OPEN) {
+        //console.log("📦 Audio chunk:", e.data.size);
+
+        socket.send(e.data);
+
+        //console.log("📡 SENT TO SERVER", e.data.size);
+      }
     };
 
-    mediaRecorder.onstop = () => {
-      if (!audioChunks.length || !isActive) return;
+    mediaRecorder.start(250); // 250ms chunks
 
-      const blob = new Blob(audioChunks, { type: "audio/webm" });
-      socket.send(blob);
-      audioChunks = [];
-    };
+    console.log("🎬 Recorder started");
 
     orb.className = "listening";
     status.textContent = "Listening...";
-    loopRecording();
+
+    isActive = true;
+    toggleBtn.textContent = "Stop Conversation";
+    toggleBtn.classList.add("active");
+
   } catch (err) {
     console.error(err);
     stopConversation();
   }
 }
 
+/* ---------------- STOP ---------------- */
+
 function stopConversation() {
+  console.log("🛑 Stopping conversation");
+
   isActive = false;
-  isSpeaking = false;
-  isWaitingForResponse = false;
 
-  currentAudio?.pause();
-  currentAudio = null;
-
-  if (mediaRecorder?.state !== "inactive") {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") {
     mediaRecorder.stop();
   }
 
-  audioContext?.close();
-  audioContext = null;
-
   orb.className = "idle";
   status.textContent = "Conversation stopped.";
-}
 
-/* ---------------- Recording Loop ---------------- */
-
-function loopRecording() {
-  if (!isActive) return;
-
-  // 🔥 User interrupts AI
-  if (isSpeaking && currentAudio) {
-    console.log("🛑 User interrupted AI");
-
-    currentAudio.pause();
-    currentAudio = null;
-
-    socket.send(JSON.stringify({ type: "INTERRUPT" }));
-
-    isSpeaking = false;
-    isWaitingForResponse = false;
-  }
-
-  if (mediaRecorder.state === "inactive") {
-    mediaRecorder.start();
-
-    setTimeout(() => {
-      if (mediaRecorder.state === "recording") {
-        mediaRecorder.stop();
-      }
-    }, 3500);
-  }
+  toggleBtn.textContent = "Start Conversation";
+  toggleBtn.classList.remove("active");
 }

@@ -1,88 +1,106 @@
-// src/tts.ts
 import WebSocket from "ws";
+import { EventEmitter } from "events";
 
-const CARTESIA_WS_URL = "wss://api.cartesia.ai/tts/websocket";
+const CARTESIA_WS_URL =
+  "wss://api.cartesia.ai/tts/websocket" +
+  `?cartesia_version=2025-04-16` +
+  `&api_key=${process.env.CARTESIA_API_KEY}`;
 
-export async function* streamTextToSpeech(text: string) {
-  const ws = new WebSocket(CARTESIA_WS_URL, {
-    headers: {
-      Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
-    },
-  });
+export class CartesiaStream extends EventEmitter {
+  private ws: WebSocket | null = null;
+  private contextId: string;
+  private isReady = false;
 
-  // --- Async queue plumbing ---
-  const queue: Buffer[] = [];
-  let done = false;
-  let error: Error | null = null;
+  constructor(contextId: string) {
+    super();
+    this.contextId = contextId;
 
-  ws.on("message", (data: WebSocket.RawData) => {
-  if (typeof data === "string") return;
+    this.ws = new WebSocket(CARTESIA_WS_URL);
 
-  if (Buffer.isBuffer(data)) {
-    queue.push(data);
-  } else if (data instanceof ArrayBuffer) {
-    queue.push(Buffer.from(new Uint8Array(data)));
-  } else if (Array.isArray(data)) {
-    // Buffer[] case (rare but valid)
-    queue.push(Buffer.concat(data));
-  }
-});
+    this.ws.on("open", () => {
+      this.isReady = true;
+      console.log("🔊 [CARTESIA] WS connected");
+      this.emit("ready");
+    });
 
-  ws.on("close", () => {
-    done = true;
-  });
+    this.ws.on("message", (data) => {
+      try {
+        const msg = JSON.parse(data.toString());
 
-  ws.on("error", (err) => {
-    error = err;
-    done = true;
-  });
+        if (msg.data) {
+          const audio = Buffer.from(msg.data, "base64");
+          this.emit("audio", audio);
+        }
 
-  // --- Wait for connection ---
-  await new Promise<void>((resolve, reject) => {
-    ws.once("open", resolve);
-    ws.once("error", reject);
-  });
+        if (msg.done) {
+          this.emit("done");
+        }
 
-  console.log("🔊 [CARTESIA] WS connected");
+        if (msg.error) {
+          this.emit("error", new Error(msg.error));
+        }
+      } catch (err) {
+        console.error("Cartesia parse error:", err);
+      }
+    });
 
-  // --- Send TTS request ---
-  ws.send(
-    JSON.stringify({
-      model_id: "sonic-3",
-      voice_id: "694f9389-aac1-45b6-b726-9d9369183238",
-      output_format: {
-        container: "raw",
-        encoding: "pcm_s16le",
-        sample_rate: 24000,
-      },
-      transcript: text,
-    })
-  );
+    this.ws.on("error", (err) => this.emit("error", err));
 
-  const tFirstAudio = Date.now();
-  let firstChunk = true;
-
-  // --- Stream audio chunks ---
-  while (!done || queue.length > 0) {
-    if (error) throw error;
-
-    if (queue.length === 0) {
-      // prevent busy loop
-      await new Promise((r) => setTimeout(r, 5));
-      continue;
-    }
-
-    const chunk = queue.shift()!;
-    if (firstChunk) {
-      console.log(
-        `🔊 [CARTESIA] First audio chunk | ${(Date.now() - tFirstAudio) / 1000}s`
-      );
-      firstChunk = false;
-    }
-
-    yield chunk;
+    this.ws.on("close", () => {
+      this.isReady = false;
+    });
   }
 
-  ws.close();
-  console.log("🔊 [CARTESIA] Stream ended");
+  async ready() {
+    if (this.isReady) return;
+
+    return new Promise<void>((resolve, reject) => {
+      if (!this.ws) return reject();
+
+      this.ws.once("open", resolve);
+      this.ws.once("error", reject);
+    });
+  }
+
+  send(text: string, cont = true) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+    this.ws.send(
+      JSON.stringify({
+        context_id: this.contextId,
+        model_id: "sonic-3",
+        transcript: text,
+        voice: {
+          mode: "id",
+          id: "694f9389-aac1-45b6-b726-9d9369183238",
+        },
+        output_format: {
+          container: "raw",
+          encoding: "pcm_s16le",
+          sample_rate: 24000,
+        },
+        continue: cont,
+      })
+    );
+  }
+
+  flush() {
+    this.send("", false);
+  }
+
+  close() {
+    if (!this.ws) return;
+
+    if (
+      this.ws.readyState === WebSocket.OPEN ||
+      this.ws.readyState === WebSocket.CONNECTING
+    ) {
+      try {
+        this.ws.close();
+      } catch {}
+    }
+
+    this.ws.removeAllListeners();
+    this.ws = null;
+  }
 }

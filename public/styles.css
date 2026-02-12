@@ -41,7 +41,7 @@ body {
 }
 
 /* Toggle button */
-#toggleBtn {
+#startBtn {
   padding: 14px 32px;
   font-size: 16px;
   font-weight: 700;
@@ -55,12 +55,12 @@ body {
   transition: all 0.3s ease;
 }
 
-#toggleBtn:hover {
+#startBtn:hover {
   transform: translateY(-2px);
   box-shadow: 0 12px 40px rgba(0, 229, 255, 0.7);
 }
 
-#toggleBtn.active {
+#startBtn.active {
   background: linear-gradient(135deg, #ff1744, #ff616f);
   color: white;
   box-shadow: 0 8px 30px rgba(255, 23, 68, 0.5);

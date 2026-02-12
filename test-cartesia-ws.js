@@ -1,14 +1,20 @@
 // test-cartesia-ws.js
 import WebSocket from "ws";
+import "dotenv/config";
 
-const ws = new WebSocket("wss://api.cartesia.ai/tts/websocket", {
-  headers: {
-    Authorization: `Bearer ${process.env.CARTESIA_API_KEY}`,
-  },
-});
+if (!process.env.CARTESIA_API_KEY) {
+  throw new Error("CARTESIA_API_KEY is not set");
+}
+
+const url =
+  "wss://api.cartesia.ai/tts/websocket" +
+  "?cartesia_version=2025-04-16" +  // Updated version
+  `&api_key=${process.env.CARTESIA_API_KEY}`;
+
+const ws = new WebSocket(url);
 
 ws.on("open", () => {
-  console.log("✅ WS connected");
+  console.log("✅ Cartesia WS connected");
   ws.close();
 });
 
